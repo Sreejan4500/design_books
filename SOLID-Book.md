@@ -777,17 +777,50 @@ In the transcript case, contractor had rewards logic but no pay logic, so it was
 
 ### 6) Code Examples
 
-#### Problematic model
+The fastest way to understand LSP is to see how a program fails when a subtype is “technically compatible” (same method signatures) but **behaviorally incompatible** (breaks expectations).
+
+#### Before: Looks like inheritance, fails at runtime (LSP violation)
 
 ```csharp
+public abstract class EmployeeFinances
+{
+    public abstract decimal CalculatePay(Employee e);
+    public virtual decimal CalculateReward(Employee e) => 100;
+}
+
+public class FullTimeFinances : EmployeeFinances
+{
+    public override decimal CalculatePay(Employee e) => e.Hours * 10;
+    public override decimal CalculateReward(Employee e) => 200;
+}
+
 public class ContractorFinances : EmployeeFinances
 {
+    // Contractor pay is not computed by our company.
+    // This override breaks the promise that "CalculatePay works".
     public override decimal CalculatePay(Employee e)
         => throw new NotImplementedException();
+
+    public override decimal CalculateReward(Employee e) => 120;
+}
+
+public static class PayrollRunner
+{
+    public static decimal RunMonthlyPay(EmployeeFinances finances, Employee e)
+    {
+        // Client code expects CalculatePay to work for ANY EmployeeFinances subtype.
+        return finances.CalculatePay(e);
+    }
 }
 ```
 
-#### Better model
+**Why this violates LSP**
+
+- The base type `EmployeeFinances` implies: “If you give me an `Employee`, I can calculate pay.”
+- The subtype `ContractorFinances` breaks that expectation by throwing at runtime.
+- So the subtype is not safely substitutable for the base type.
+
+#### After: Model capabilities explicitly (LSP-aligned redesign)
 
 ```csharp
 public abstract class EmployeeRewards
@@ -795,16 +828,43 @@ public abstract class EmployeeRewards
     public abstract decimal CalculateReward(Employee e);
 }
 
-public abstract class EmployeeFinances : EmployeeRewards
+public abstract class PayableEmployeeFinances : EmployeeRewards
 {
     public abstract decimal CalculatePay(Employee e);
+}
+
+public class FullTimeFinances : PayableEmployeeFinances
+{
+    public override decimal CalculatePay(Employee e) => e.Hours * 10;
+    public override decimal CalculateReward(Employee e) => 200;
+}
+
+public class PartTimeFinances : PayableEmployeeFinances
+{
+    public override decimal CalculatePay(Employee e) => e.Hours * 5;
+    public override decimal CalculateReward(Employee e) => 150;
 }
 
 public class ContractorRewards : EmployeeRewards
 {
     public override decimal CalculateReward(Employee e) => 120;
 }
+
+public static class PayrollRunner
+{
+    public static decimal RunMonthlyPay(PayableEmployeeFinances finances, Employee e)
+    {
+        // Now only "payable" finance types can be used here.
+        return finances.CalculatePay(e);
+    }
+}
 ```
+
+**What improved**
+
+- We stopped pretending contractors are “pay-calculable” in this system.
+- Code that needs pay now depends on `PayableEmployeeFinances`, not a broader type.
+- The compiler prevents invalid substitutions (no surprise runtime exceptions).
 
 ### 7) Real-World Applications
 
@@ -933,6 +993,41 @@ Refactor approach:
 
 ### 6) Code Examples
 
+#### Before: Fat interface forces irrelevant methods (ISP violation)
+
+```csharp
+public interface IEmployeeFinances
+{
+    decimal CalculatePay(Employee e);
+    decimal CalculateReward(Employee e);
+    decimal CalculateStockOptions(Employee e); // New requirement added here
+}
+
+public class FullTimeFinances : IEmployeeFinances
+{
+    public decimal CalculatePay(Employee e) => e.Hours * 10;
+    public decimal CalculateReward(Employee e) => 200;
+
+    // Forced to implement, but doesn't apply.
+    public decimal CalculateStockOptions(Employee e) => 0;
+}
+
+public class CLevelFinances : IEmployeeFinances
+{
+    public decimal CalculatePay(Employee e) => e.Hours * 50;
+    public decimal CalculateReward(Employee e) => 500;
+    public decimal CalculateStockOptions(Employee e) => 1000;
+}
+```
+
+**What’s wrong**
+
+- Full-time and part-time implementations are forced to support a method that does not apply.
+- Teams often “return 0” or throw exceptions to satisfy the interface, which creates hidden bugs later.
+- If `IEmployeeFinances` is used by external clients, changing it forces widespread rebuild/retest/redeploy.
+
+#### After: Split by capability (ISP-aligned)
+
 ```csharp
 public interface IEmployeeFinances
 {
@@ -948,6 +1043,12 @@ public interface IStockOptionEligible : IEmployeeFinances
 public class CLevelFinances : IStockOptionEligible { /* ... */ }
 public class PartTimeFinances : IEmployeeFinances { /* ... */ }
 ```
+
+**What improved**
+
+- Only C-level types implement stock option logic.
+- Existing implementers are not forced to change when new optional features appear.
+- Interfaces remain stable and easier to version.
 
 ### 7) Real-World Applications
 
@@ -977,15 +1078,25 @@ public class PartTimeFinances : IEmployeeFinances { /* ... */ }
 ### 11) Interview Questions (10)
 
 1. **[Easy]** Define ISP.  
+   **Answer:** No client should be forced to depend on methods it does not use; prefer small, focused interfaces.
 2. **[Easy]** What is a fat interface?  
+   **Answer:** An interface that bundles unrelated methods so many implementers/clients only need part of it.
 3. **[Medium]** Why is forced implementation harmful?  
+   **Answer:** It leads to dummy methods, accidental bugs, extra coupling, and ripple-effect changes across implementers.
 4. **[Medium]** ISP vs SRP?  
+   **Answer:** SRP is about one reason to change for a module; ISP is about keeping contracts focused so clients depend only on what they need.
 5. **[Hard]** ISP and API versioning?  
+   **Answer:** Stable small interfaces reduce breaking changes; you can add new capability interfaces instead of modifying existing contracts.
 6. **[Hard]** Example of ISP violation in microservices?  
+   **Answer:** A shared client SDK interface that forces every consumer to implement/handle endpoints they never call.
 7. **[Hard]** How to refactor without breaking all consumers?  
+   **Answer:** Keep old interface, introduce new focused interfaces, adapt gradually (wrappers/adapters), and migrate clients incrementally.
 8. **[Medium]** ISP and LSP relationship?  
+   **Answer:** Smaller capability-based interfaces make it easier for implementations to be substitutable and avoid “unsupported method” behavior.
 9. **[Medium]** When to keep one interface instead of splitting?  
+   **Answer:** When methods truly belong together and most clients use them; splitting would add complexity without real benefit.
 10. **[Medium]** Can default methods hide ISP issues?
+    **Answer:** Yes—defaults can mask that clients should not depend on those methods at all; the design smell still exists.
 
 ### 12) Quick Quiz
 
@@ -1079,6 +1190,45 @@ public class EmployeeService
 
 ### 6) Code Examples
 
+#### Before: High-level module depends on concrete details (DIP violation)
+
+```csharp
+public class EmployeeRepository
+{
+    public void Save(Employee employee)
+    {
+        try
+        {
+            // save logic
+        }
+        catch (Exception ex)
+        {
+            // The repository is now deciding HOW and WHERE to log.
+            // Also tightly coupled to concrete classes.
+            bool fileLoggingEnabled = true;
+            bool dbLoggingEnabled = false;
+
+            if (fileLoggingEnabled)
+            {
+                var logger = new FileLogger();
+                logger.LogError(ex.Message);
+            }
+            else if (dbLoggingEnabled)
+            {
+                var logger = new DatabaseLogger();
+                logger.LogError(ex.Message);
+            }
+        }
+    }
+}
+```
+
+**Problems**
+
+- Business flow and infrastructure policy are mixed (SRP issue).
+- Direct `new` creates tight coupling; adding `CloudLogger` forces edits here (OCP issue).
+- Testing becomes harder because dependencies are not replaceable.
+
 #### Constructor injection
 
 ```csharp
@@ -1102,6 +1252,21 @@ public class EmployeeRepository
     }
 }
 ```
+
+#### After (Optional): Configuration chooses implementation without changing repository
+
+```csharp
+public static class CompositionRoot
+{
+    public static EmployeeRepository BuildEmployeeRepository(bool useDatabaseLogger)
+    {
+        ILogger logger = useDatabaseLogger ? new DatabaseLogger() : new FileLogger();
+        return new EmployeeRepository(logger);
+    }
+}
+```
+
+This still uses `new`, but it moves it out of the high-level module into a dedicated wiring location.
 
 #### Container registration example (conceptual)
 
@@ -1140,15 +1305,25 @@ services.AddTransient<EmployeeRepository>();
 ### 11) Interview Questions (10)
 
 1. **[Easy]** Define DIP in one sentence.  
+   **Answer:** High-level modules should not depend on low-level modules; both should depend on abstractions, and details should depend on abstractions.
 2. **[Medium]** DIP vs DI vs IoC?  
+   **Answer:** DIP is a design principle (dependency direction). DI is a technique to supply dependencies. IoC is the broader concept of moving control (object creation/flow) to a framework/container.
 3. **[Medium]** Why is `new` in domain classes a smell?  
+   **Answer:** It hard-wires a concrete dependency, increases coupling, makes changes ripple, and makes testing harder because you cannot easily replace that dependency.
 4. **[Easy]** High-level vs low-level module examples?  
+   **Answer:** High-level: order processing/policy; low-level: file logging, database access, HTTP clients, message brokers.
 5. **[Hard]** Constructor vs property injection trade-offs?  
+   **Answer:** Constructor injection makes dependencies explicit and enforces valid object state; property injection can enable optional dependencies but risks partially initialized objects.
 6. **[Medium]** How does DIP improve testing?  
+   **Answer:** You can inject mocks/fakes for interfaces, test high-level behavior in isolation, and avoid real IO in unit tests.
 7. **[Hard]** What is composition root?  
+   **Answer:** A dedicated place where the application wires concrete implementations to abstractions and builds the object graph (for example, startup/bootstrap code).
 8. **[Hard]** Can DIP exist without DI container?  
+   **Answer:** Yes. You can apply DIP using manual wiring (factories/composition root); a container just automates it.
 9. **[Medium]** DI container drawbacks?  
+   **Answer:** Misconfiguration risk, hidden runtime failures, debugging complexity, and overuse leading to unclear architecture.
 10. **[Hard]** How do you avoid over-injection?
+    **Answer:** Inject only real collaborators, keep constructors small, group related behavior behind cohesive services, and avoid injecting data/value objects.
 
 ### 12) Quick Quiz
 
@@ -1270,15 +1445,25 @@ public class TaxCalculator
 ### 11) Interview Questions (10)
 
 1. **[Easy]** What is DRY and when does it help most?  
+   **Answer:** Avoid duplicating the same knowledge/logic; it helps most when changes are frequent and duplication would require many updates.
 2. **[Medium]** DRY vs accidental duplication?  
+   **Answer:** Accidental duplication is repeated code that represents the same rule; DRY aims to centralize the rule, but avoid merging unrelated code that only “looks similar.”
 3. **[Easy]** Explain KISS with engineering example.  
+   **Answer:** Prefer the simplest correct design; for example, start with a straightforward API and refactor when real complexity appears.
 4. **[Medium]** YAGNI and product uncertainty relation?  
+   **Answer:** When requirements are uncertain, speculative features often become waste; build what you need now and adapt later with better context.
 5. **[Medium]** Premature optimization risks?  
+   **Answer:** It increases complexity, delays delivery, and can be wasted if requirements change; measure first, then optimize.
 6. **[Medium]** Least astonishment in API naming?  
+   **Answer:** Names and behavior should match; `SaveEmployee()` should save, not delete or trigger unrelated side effects.
 7. **[Hard]** Opportunity cost in architecture choices?  
+   **Answer:** Every extra layer/framework consumes time and complexity budget; choose the option that delivers the most value for the least long-term cost.
 8. **[Hard]** Occam's Razor in service design?  
+   **Answer:** Don’t create extra services/classes/abstractions without clear benefit; each added entity must justify its maintenance cost.
 9. **[Hard]** When is upfront design still necessary?  
+   **Answer:** When constraints are critical (security, compliance, performance, data model) you need sufficient upfront design to avoid rework, but not perfection.
 10. **[Hard]** How to balance speed vs maintainability?
+    **Answer:** Deliver incrementally with guardrails: tests, refactoring time, clear boundaries, and design reviews—optimize for sustainable speed.
 
 ### 12) Quick Quiz
 
@@ -1397,15 +1582,25 @@ DIP: high-level depending on concrete class?
 ### 11) Interview Questions (10)
 
 1. **[Easy]** What are SOLID principles and why use them?  
+   **Answer:** Five design principles that reduce coupling, improve maintainability, and make change safer in object-oriented systems.
 2. **[Hard]** Explain SOLID using one practical case study.  
+   **Answer:** Use one domain (like employee management): split responsibilities (SRP), add new employee types via extension (OCP), ensure valid subtypes (LSP), split capability interfaces (ISP), and inject abstractions (DIP).
 3. **[Hard]** Identify OCP and LSP violations in a given design.  
+   **Answer:** OCP: repeated edits to a core method for new cases (big `if/switch`). LSP: a subclass breaks base expectations (throws, weakens guarantees, or changes meaning).
 4. **[Medium]** DIP vs DI vs IoC differences.  
+   **Answer:** DIP is a principle about depending on abstractions; DI is a method of providing dependencies; IoC is a broader pattern of moving control to a framework/container.
 5. **[Medium]** High cohesion and low coupling in practice?  
+   **Answer:** Keep related behaviors together and minimize dependencies between modules; changes should be localized and predictable.
 6. **[Medium]** Signs of design rot in a project?  
+   **Answer:** Rigidity, fragility, immobility, high viscosity, needless complexity, repetition, and opacity.
 7. **[Medium]** Which SOLID principle is hardest and why?  
+   **Answer:** Often LSP and OCP, because they require correct modeling of behavior and extension points, not just mechanical refactoring.
 8. **[Hard]** How to refactor without breaking production behavior?  
+   **Answer:** Add tests, refactor in small steps, keep interfaces stable, use feature flags if needed, and validate with incremental deployments.
 9. **[Hard]** What trade-offs appear while applying SOLID?  
+   **Answer:** More types/abstractions vs simplicity, initial time cost vs long-term maintainability, and risk of overengineering if applied without real change pressure.
 10. **[Medium]** Which non-SOLID principles do you also use and why?
+    **Answer:** DRY/KISS/YAGNI/least astonishment/premature optimization guidance to keep systems understandable, avoid waste, and reduce change cost.
 
 ### 12) Quick Quiz
 
